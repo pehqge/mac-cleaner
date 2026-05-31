@@ -287,18 +287,13 @@ if [ -d "${H}/Library/Caches" ]; then
   done < <(find "${H}/Library/Caches" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 fi
 
-# --- REVIEW: broken preference plists (plutil -lint reports corruption) ---
-# A corrupt plist makes the owning app fall back to defaults anyway; removing it is safe
-# and the app regenerates a clean one. Only files that FAIL plutil -lint are offered.
-if command -v plutil >/dev/null 2>&1 && [ -d "${H}/Library/Preferences" ]; then
-  while IFS= read -r -d '' plf; do
-    is_protected "$plf" && continue
-    if ! plutil -lint "$plf" >/dev/null 2>&1; then
-      kb=$(kib_size "$plf"); hu=$(kb_to_human "$kb")
-      add_item review "Broken preference (corrupt plist): ${plf#$H/}" "$kb" "$hu" rmtree "rm -f \"$plf\""
-    fi
-  done < <(find "${H}/Library/Preferences" -maxdepth 1 -type f -name '*.plist' -print0 2>/dev/null)
-fi
+# --- "Broken" preference plists: intentionally NOT a cleanup target. ---
+# A failing `plutil -lint` does NOT mean a plist is junk: many ~/Library/Preferences
+# files are owned by Apple apps (Messages, Contacts, Mail, …), are protected by TCC
+# (so `rm` returns "Operation not permitted" without Full Disk Access anyway), and
+# deleting them RESETS real settings rather than reclaiming meaningful space (these
+# files are kilobytes). The reward is trivial and the risk is data/config loss, so
+# clean.sh never offers to delete them. scan.sh reports the count for awareness only.
 
 # --- REVIEW: stale third-party user logs (>30d). NEVER Claude / DiagnosticReports (CLAUDE.md). ---
 if [ -d "${H}/Library/Logs" ]; then

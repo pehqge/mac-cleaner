@@ -270,6 +270,12 @@ Estimated Safe+Review reclaim: ~XX GB   (RAM is freed only via §5, not disk cle
 - `kernel_task`, `WindowServer`, `loginwindow` — never kill (`kernel_task` is the thermal governor).
 - An **active virtualenv your `python3` resolves into** — until confirmed disposable per §3C.
 - Any `~/Library/Developer/Xcode/Archives` — signed app archives are the only copy, not regenerable.
+- **`~/Library/Preferences/*.plist` — never a cleanup target, even ones that fail `plutil -lint`.** A failed
+  lint is *not* proof of corruption; deleting a plist **resets that app's settings**, Apple-owned ones
+  (`com.apple.*`: Messages, Contacts, Mail, …) are **TCC-protected so `rm` fails** ("Operation not permitted")
+  without Full Disk Access, and the size is kilobytes. Never put these in the Safe tier and **never delete them
+  in a "clean everything" batch**. Report the count for awareness only; if a specific app actually misbehaves,
+  remove that one plist by hand with approval and relaunch the app — not as routine cleanup.
 
 **Two commands are permanently BLOCKED** (never emit them): `rm -rf` of an active venv, and
 `rm -rf ~/Library/Logs/*`.

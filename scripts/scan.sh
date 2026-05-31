@@ -434,20 +434,31 @@ fi
 note "System logs (/private/var/log) need sudo to clear — handled in the deferred end-of-session sudo block, not here."
 
 # ----------------------------------------------------------------------------
-# Broken preferences (CleanMyMac "Broken Preferences") — corrupt plists.
+# "Broken" preferences (what CleanMyMac calls "Broken Preferences") — awareness
+# only. A failing `plutil -lint` does NOT mean a plist is junk; deleting these
+# resets real app settings, many are Apple-owned + TCC-protected (rm fails), and
+# the size is kilobytes. NOT a cleanup target — reported for information only.
 # ----------------------------------------------------------------------------
-section "BROKEN PREFERENCES (read-only) — plists that fail plutil -lint"
+section "PREFERENCE PLISTS THAT FAIL plutil -lint (read-only, informational)"
 if command -v plutil >/dev/null 2>&1 && [ -d "${H}/Library/Preferences" ]; then
-  bad=0
+  bad=0; apple=0
   while IFS= read -r -d '' plf; do
     is_protected "$plf" && continue
     if ! plutil -lint "$plf" >/dev/null 2>&1; then
       du -sh "$plf" 2>/dev/null || true
       bad=$((bad+1))
+      case "${plf##*/}" in com.apple.*) apple=$((apple+1));; esac
     fi
   done < <(find "${H}/Library/Preferences" -maxdepth 1 -type f -name '*.plist' -print0 2>/dev/null)
-  [ "$bad" -eq 0 ] && note "(no corrupt plists found — good)" \
-    || note "${bad} corrupt plist(s) — safe to remove; owning app regenerates a clean default. (clean.sh offers each)"
+  if [ "$bad" -eq 0 ]; then
+    note "(none — good)"
+  else
+    note "${bad} plist(s) fail lint (${apple} Apple-owned). NOT a cleanup target:"
+    note "  a lint failure is not proof of corruption; deleting resets the app's"
+    note "  settings, Apple/TCC-protected ones refuse 'rm' anyway, and the size is"
+    note "  trivial (KB). clean.sh does not offer these. Ignore unless an app"
+    note "  actually misbehaves — then remove that one plist by hand and relaunch it."
+  fi
 else
   note "plutil or ~/Library/Preferences unavailable — skipping."
 fi
