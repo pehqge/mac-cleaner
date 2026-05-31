@@ -31,6 +31,11 @@ This is not a one-click cleaner. Nothing runs without your approval, every actio
 your data is protected by design. The resting state of the toolkit is a read-only scanner: it changes nothing
 until told to.
 
+> **Worried about running a cleaner on your Mac? Good — read [SAFETY.md](SAFETY.md) first.** It explains, in
+> plain language and with commands you can run yourself, why these scripts are safe: no internet access, no
+> hidden commands, no malware, nothing deleted without showing you the exact command and waiting for your
+> approval, and your sensitive data protected by design. It's the page to read before you trust this tool.
+
 ## Safety model
 
 - Read-only first. Nothing is deleted, moved, or changed without an explicit OK.
@@ -44,6 +49,9 @@ until told to.
 - Protected paths. `~/.claude` and anything you add to the protect list (or `--ignore`) are excluded from
   every scan, search, and clean. Photos, Mail, messaging-app data, iOS backups, and SIP-protected system
   paths are never deletion targets.
+- No internet, no telemetry. The scripts make zero network connections — they run fully offline.
+
+For the full picture, including how to audit the scripts yourself, see **[SAFETY.md](SAFETY.md)**.
 
 ## Requirements
 
@@ -182,6 +190,7 @@ those as separate, clearly labelled jobs.
 mac-cleaner/
 ├── CLAUDE.md                  # agent playbook: the full scan → approve → clean → verify workflow and rules
 ├── README.md                  # this file
+├── SAFETY.md                  # why the scripts are safe to run, and how to verify it yourself
 ├── scripts/
 │   ├── scan.sh                # read-only deep scan
 │   ├── clean.sh               # dry-run-default cleanup (Safe/Review tiers, per-item confirm)
