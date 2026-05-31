@@ -63,12 +63,29 @@ GNU/Linux flags will fail here. Follow these exactly:
 - A read-only scanner running `du`/`find` over SIP/permission-denied paths will trip `set -e` + `pipefail`.
   Make every size/scan pipeline tolerant (`{ du ... || true; } | awk ...`) so one unreadable path is skipped,
   not fatal.
+- **`sudo` never runs inside the agent session — defer it to the very end.** Interactive `sudo` has no usable
+  TTY when launched by the agent (or by the user's `!` prefix), so the password prompt hangs and the command
+  fails. **Never tell the user to `!`-run a `sudo` command.** Instead, collect *every* approved `sudo` action
+  and present them **once, together, as the last thing in the session** — a single copy-paste block the user
+  pastes into a **separate Terminal tab or window (`Cmd-T`)** and authenticates there. Never scatter `sudo`
+  steps mid-conversation; they get lost in scrollback. Non-sudo actions still run inline as normal. The same
+  applies to read-only `sudo` *checks* (e.g. `sfltool dumpbtm`, `mdutil -s`): ask the user to run them in a
+  separate tab and paste the output back, or rely on a script's already-captured output — never `!`.
 
 ---
 
 ## 2. The re-runnable workflow (scan → explain → approve → clean → verify)
 
 Drive everything through the three scripts in `scripts/` (see §7). All default to **read-only / dry-run**.
+
+**Open with orientation — first message, before running anything.** Even when the user only says “clean my
+mac”, your first reply explains, in 3–5 plain lines and *before* the scan runs: **(a)** what this toolkit is
+(a read-only scanner you drive; nothing is deleted, changed, or disabled without their explicit OK),
+**(b)** the three scripts and what each does — `scan.sh` (read-only inspect), `clean.sh` (dry-run preview;
+`--apply` to act, each item confirmed), `optimize.sh` (background/perf audit; opt-in tweaks only) — and
+**(c)** that you are starting with the read-only scan now. Never run a command the user hasn't been told the
+purpose of first (§0.2). “clean my mac” is permission to *begin the workflow*, not permission to skip the
+explanation or to delete anything.
 
 **PHASE 0 — Preflight.** Resolve the real `$HOME`; seed the protect list (`~/.claude` + anything the user
 configured). Verify BSD-correct commands. Warn if **Terminal lacks Full Disk Access** (System Settings →
@@ -93,6 +110,15 @@ delta**. Never auto-run. **Never escalate a Review/Caution item into a Safe batc
 **PHASE 4 — RAM relief (separate opt-in).** §5.
 
 **PHASE 5 — Background optimizations (separate opt-in).** §6.
+
+**PHASE 6 — Wrap-up: one summary, one deferred sudo block.** Do **all** non-sudo work inline first (Safe/Review
+cleans, login-item `bootout`, quitting idle apps, `brew services stop`). Then close the session with **one**
+consolidated summary: disk freed (before/after delta), what was optimized, the honest RAM verdict, and what was
+held back and why. If any approved action needs `sudo`, the **single sudo block is the very last thing in the
+whole session** (§1, §6) — collected into one copy-paste box, with separate-Terminal-tab instructions and a
+one-line what/revert per command. **Never mention sudo earlier in the conversation, never split it across
+messages, and never tell the user to `!`-run it.** Scattering sudo mid-flow (e.g. surfacing it during the
+optimize phase *and* again at the end) is how the instruction gets lost — emit it exactly once, at the end.
 
 **Idempotent.** Re-running re-scans live state: emptied caches show 0 and drop off the menu; new growth
 (future iOS backups, hourly TM snapshots, regrown package stores) is surfaced automatically.
@@ -280,6 +306,33 @@ After quitting apps, re-check `sysctl vm.swapusage` and report the delta.
 Each optimization has a read-only **check** shown first, and an **action** run only on approval. All are
 strictly background/perf with **zero visual or usability change**.
 
+> **Most actions here need `sudo`** (`pmset`, `dscacheutil`/`killall`, `purge`, `mdutil`, `thinlocalsnapshots`,
+> and the `sfltool`/`mdutil -s` checks). Per §1, the agent does **not** run these and does **not** ask the user
+> to `!`-run them. Batch every approved sudo action into **one** copy-paste block presented as the **last thing
+> in the session**, with a note to run it in a **separate Terminal tab (`Cmd-T`)**. Rank the block by value so
+> the user can skip the low-value lines: a durable setting like `pmset -a powernap 0` / `proximitywake 0`
+> (fewer sleep wakes — real, persistent) is worth keeping; a **DNS flush is transient and symptom-only** (it
+> frees nothing and changes nothing lasting) — include it only if the user reports stale-DNS/network hangs,
+> not by default.
+
+**Final sudo block — the exact shape to emit (and only at the very end of the session):**
+
+> **These last steps need your password, which I can't type for you.** Open a **new Terminal tab** (`Cmd-T`),
+> or any terminal window outside Claude, paste the line below, press Enter, and type your login password:
+>
+> ```bash
+> sudo pmset -a powernap 0
+> ```
+>
+> - `pmset -a powernap 0` — fewer background wakes while the Mac sleeps (durable; revert with
+>   `sudo pmset -a powernap 1`).
+>
+> Don't paste it with the `!` prefix inside Claude — interactive `sudo` has no terminal there, so the password
+> prompt hangs and nothing runs.
+
+Add a line per approved sudo action, each with its one-line what/revert. Omit the block entirely if nothing
+approved needed sudo.
+
 1. **Audit background-item database (BTM).** Check: `sudo sfltool dumpbtm` (read-only). The most complete view
    of every LaunchAgent/Daemon/login-item/XPC helper, including orphans. **Never** run `sfltool resetbtm`.
 2. **Remove unneeded login items** (durable RAM/CPU). Check: `launchctl list | grep -v com.apple | sort` and
@@ -326,7 +379,9 @@ All scripts are `/usr/bin/env bash`, **portable to bash 3.2**, **read-only / dry
 - **`scripts/optimize.sh`** — Phase 5. **Read-only audit by default.** With `--apply` it performs only opt-in,
   per-action-confirmed background/perf changes (DNS flush, Power Nap / proximity wake off, `sudo purge`, a
   reviewed `launchctl bootout` of a user login item — never `com.apple.*`). Every sudo action prompts even
-  under `--yes`. Background/perf only — **never** a UI/visual change.
+  under `--yes`. Background/perf only — **never** a UI/visual change. When the **agent** (not the script) is
+  driving, it cannot supply a sudo password, so it surfaces these as the deferred end-of-session sudo block
+  (§1, §6) instead of running them inline.
 
 > If a script does not yet exist, **do not fabricate output** — either create it following this spec
 > (read-only default, summary-first, BSD-correct, protect-list) or run the documented commands directly per
