@@ -113,6 +113,22 @@ sub "Suspicious third-party 'memory cleaner' / 'optimizer' agents (net-negative)
 ls -1 "${H}/Library/LaunchAgents" 2>/dev/null | grep -iE 'clean|memory|optimizer' | sed 's/^/  /' \
   || note "(none found — good; these add idle CPU and do not beat the kernel compressor)"
 
+sub "Broken login items (agents whose program no longer exists)"
+broken=0
+if [ -d "${H}/Library/LaunchAgents" ]; then
+  for pl in "${H}/Library/LaunchAgents/"*.plist; do
+    [ -e "$pl" ] || continue
+    prog=$(/usr/libexec/PlistBuddy -c 'Print :Program' "$pl" 2>/dev/null || true)
+    [ -z "$prog" ] && prog=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$pl" 2>/dev/null || true)
+    if [ -n "$prog" ] && [ ! -e "$prog" ]; then
+      printf '%s  BROKEN%s %s -> missing: %s\n' "$Y" "$R" "${pl##*/}" "$prog"
+      broken=$((broken+1))
+    fi
+  done
+fi
+[ "$broken" -eq 0 ] && note "(none — no orphaned user LaunchAgents)" \
+  || note "Remove a broken one: rm its plist + System Settings > Login Items. Verify it is truly unused first."
+
 section "HOMEBREW BACKGROUND SERVICES (read-only)"
 if command -v brew >/dev/null 2>&1; then
   brew services list 2>/dev/null | sed 's/^/  /' || note "(unavailable)"

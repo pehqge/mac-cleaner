@@ -127,6 +127,12 @@ Audit and apply background optimizations:
 | `--safe-only` | Limit to the Safe tier |
 | `--include-downloads` | Also consider Downloads build artifacts (e.g. `.next`); off by default |
 | `--ignore <dir>` | Protect an extra directory (repeatable) |
+| `--plan-tsv` | Print the plan as `id⇥group⇥size⇥label⇥cmd` and exit; deletes nothing |
+| `--apply --select 1,5` | Apply only the listed plan ids (ids come from `--plan-tsv` or the `[brackets]`) |
+
+Every plan item carries a stable id (shown in `[brackets]`). `--plan-tsv` plus `--select` let an agent build
+an interactive, per-file selection — you tick exactly which items to remove, name and size shown — then apply
+only that subset. Selection happens in the agent; the script just executes the approved ids.
 
 ## Protecting extra paths
 
@@ -155,11 +161,13 @@ Re-run it anytime. The resting state is a scanner: emptied caches show 0 and dro
 ### What it looks at
 
 Safe (regenerable caches and junk): pnpm store, npx cache, Homebrew stale downloads and old versions, uv
-cache, GoogleUpdater CRX cache, other tool caches found by the scan, DNS flush.
+cache, GoogleUpdater CRX cache, unavailable Xcode simulator runtimes, other tool caches found by the scan,
+DNS flush.
 
-Review (verify before deleting): Next.js build caches, duplicate or non-default Rust toolchains, unused Docker
-data, Cargo registry caches, old Downloads archives and installers, inactive `node_modules`, and a login-item
-and Homebrew-service audit.
+Review (verify before deleting): per-app user caches (each picked individually), corrupt preference plists,
+stale third-party logs over 30 days old, Next.js build caches, duplicate or non-default Rust toolchains,
+unused Docker data, Cargo registry caches, old Downloads archives and installers, inactive `node_modules`,
+and a login-item (including broken/orphaned ones) and Homebrew-service audit.
 
 Caution (data loss or rebuild cost): an active virtualenv your `python3` lives in (blocked by default),
 `sleepimage` and hibernation, local APFS snapshots, iOS device backups, and user data (Photos, messaging apps,

@@ -15,6 +15,8 @@
 #   ./clean.sh --include-downloads  # also consider Downloads build artifacts (.next) — off by default
 #   ./clean.sh --ignore <dir>       # exclude a dir (repeatable)
 #   ./clean.sh --yes                # skip the interactive confirm (still prints summary). Use with care.
+#   ./clean.sh --plan-tsv           # print plan as TSV (id, group, size, label, cmd) and exit — no delete
+#   ./clean.sh --apply --select 1,5 # apply ONLY plan ids 1 and 5 (ids come from --plan-tsv / the [brackets])
 #
 # HARD CONSTRAINTS (never violated):
 #   - Every path in the PROTECTED list is excluded from every operation (~/.claude by
@@ -38,6 +40,8 @@ APPLY=0
 SAFE_ONLY=0
 INCLUDE_DOWNLOADS=0
 ASSUME_YES=0
+PLAN_TSV=0
+SELECT_IDS=""
 IGNORES=()
 
 while [ $# -gt 0 ]; do
@@ -47,6 +51,15 @@ while [ $# -gt 0 ]; do
     --include-downloads) INCLUDE_DOWNLOADS=1 ;;
     --yes|-y)            ASSUME_YES=1 ;;
     --ignore)            shift; [ $# -gt 0 ] || { echo "--ignore needs a path" >&2; exit 2; }; IGNORES+=("$1") ;;
+    # --plan-tsv: emit the plan as machine-readable TSV (id, group, size, label, cmd)
+    # and exit WITHOUT deleting. Lets an orchestrator (e.g. the agent) build a
+    # checkbox picker from real items, then re-invoke with --select.
+    --plan-tsv)          PLAN_TSV=1 ;;
+    # --select "1,5,9": apply ONLY the plan ids listed (the ids shown in [brackets]
+    # and emitted by --plan-tsv). Overrides the Safe/Review group selection so an
+    # explicit, user-chosen subset runs. Still honors the protected-path guard and,
+    # unless --yes, the per-item confirmation.
+    --select)            shift; [ $# -gt 0 ] || { echo "--select needs ids" >&2; exit 2; }; SELECT_IDS="$1" ;;
     -h|--help)
       sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; echo "Try --help." >&2; exit 2 ;;
@@ -244,6 +257,74 @@ if [ "$INCLUDE_DOWNLOADS" -eq 1 ] && [ -d "${H}/Downloads" ]; then
   done < <(find "${H}/Downloads" -type d -name '.next' -prune -print0 2>/dev/null)
 fi
 
+# --- SAFE: Xcode unavailable simulator runtimes (CleanMyMac's biggest "Xcode Junk" win) ---
+# `simctl delete unavailable` removes only runtimes/devices macOS already marks unavailable
+# (orphaned after Xcode/OS updates). Re-downloadable from Xcode. Size is not cheaply
+# attributable per-runtime, so it is reported as "varies" and sorts to the bottom.
+if command -v xcrun >/dev/null 2>&1 && xcrun simctl help >/dev/null 2>&1; then
+  UNAVAIL=$( { xcrun simctl runtime list 2>/dev/null || true; } | grep -ci 'unavailable' || true )
+  if [ "${UNAVAIL:-0}" -gt 0 ]; then
+    add_item safe "Xcode: delete ${UNAVAIL} unavailable simulator runtime(s)" "0" "varies" tool "xcrun simctl delete unavailable"
+  fi
+fi
+
+# --- REVIEW: per-app user caches (each child of ~/Library/Caches; selectable individually) ---
+# Regenerable, but some apps keep light state here — tier Review so each is picked, not
+# blanket-wiped. We remove the CONTENTS (".../*"), not the dir, so the app re-creates it.
+# Children <1MB are skipped as noise. Protected paths (incl. anything in local.config.sh,
+# e.g. a browser profile) are filtered out.
+if [ -d "${H}/Library/Caches" ]; then
+  while IFS= read -r -d '' cdir; do
+    [ "$cdir" = "${H}/Library/Caches" ] && continue
+    is_protected "$cdir" && continue
+    # Never offer Claude Code's own cache — this toolkit is agent-driven; do not
+    # clean its own brain (CLAUDE.md §0.6). ~/.claude is already protected; this
+    # also covers ~/Library/Caches/claude-cli-nodejs and similar.
+    case "$cdir" in *[Cc]laude*) continue ;; esac
+    kb=$(kib_size "$cdir"); [ "${kb:-0}" -ge 1024 ] || continue
+    hu=$(kb_to_human "$kb")
+    add_item review "User cache: ${cdir##*/}" "$kb" "$hu" rmglob "rm -rf \"$cdir\"/*"
+  done < <(find "${H}/Library/Caches" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+fi
+
+# --- REVIEW: broken preference plists (plutil -lint reports corruption) ---
+# A corrupt plist makes the owning app fall back to defaults anyway; removing it is safe
+# and the app regenerates a clean one. Only files that FAIL plutil -lint are offered.
+if command -v plutil >/dev/null 2>&1 && [ -d "${H}/Library/Preferences" ]; then
+  while IFS= read -r -d '' plf; do
+    is_protected "$plf" && continue
+    if ! plutil -lint "$plf" >/dev/null 2>&1; then
+      kb=$(kib_size "$plf"); hu=$(kb_to_human "$kb")
+      add_item review "Broken preference (corrupt plist): ${plf#$H/}" "$kb" "$hu" rmtree "rm -f \"$plf\""
+    fi
+  done < <(find "${H}/Library/Preferences" -maxdepth 1 -type f -name '*.plist' -print0 2>/dev/null)
+fi
+
+# --- REVIEW: stale third-party user logs (>30d). NEVER Claude / DiagnosticReports (CLAUDE.md). ---
+if [ -d "${H}/Library/Logs" ]; then
+  while IFS= read -r -d '' lg; do
+    case "$lg" in *Claude*|*DiagnosticReports*) continue ;; esac
+    is_protected "$lg" && continue
+    kb=$(kib_size "$lg"); [ "${kb:-0}" -ge 256 ] || continue
+    hu=$(kb_to_human "$kb")
+    add_item review "Stale log (>30d): ${lg#$H/}" "$kb" "$hu" rmtree "rm -rf \"$lg\""
+  done < <(find "${H}/Library/Logs" -mindepth 1 -maxdepth 1 -mtime +30 ! -name Claude -print0 2>/dev/null)
+fi
+
+# ----------------------------------------------------------------------------
+# Machine-readable plan (--plan-tsv): id<TAB>group<TAB>size<TAB>label<TAB>cmd.
+# Read-only — emits and exits, deletes nothing. Lets an orchestrator build a
+# selection UI from real items and re-invoke with --apply --select <ids>.
+# ----------------------------------------------------------------------------
+if [ "$PLAN_TSV" -eq 1 ]; then
+  n=${#PLAN_GROUP[@]}; i=0
+  while [ "$i" -lt "$n" ]; do
+    printf '%s\t%s\t%s\t%s\t%s\n' "$i" "${PLAN_GROUP[$i]}" "${PLAN_HUMAN[$i]}" "${PLAN_LABEL[$i]}" "${PLAN_CMD[$i]}"
+    i=$((i+1))
+  done
+  exit 0
+fi
+
 # ----------------------------------------------------------------------------
 # Print the plan (always — this is the summary-first requirement).
 # ----------------------------------------------------------------------------
@@ -282,7 +363,7 @@ print_group() {
     printf '  %s(nothing found)%s\n' "$D" "$R"; rm -f "$tmp"; return 0
   fi
   sort -t$'\t' -k1,1 -rn "$tmp" | while IFS=$'\t' read -r kb idx; do
-    printf '  %s%-9s%s  %s\n' "$B" "${PLAN_HUMAN[$idx]}" "$R" "${PLAN_LABEL[$idx]}"
+    printf '  %s[%s]%s %s%-9s%s  %s\n' "$D" "$idx" "$R" "$B" "${PLAN_HUMAN[$idx]}" "$R" "${PLAN_LABEL[$idx]}"
     printf '            %s$ %s%s\n' "$D" "${PLAN_CMD[$idx]}" "$R"
   done
   rm -f "$tmp"
@@ -346,17 +427,29 @@ if [ "$APPLY" -eq 0 ]; then
   exit 0
 fi
 
-# Collect the indices we will run, honoring --safe-only.
+# Collect the indices we will run.
 RUN_IDX=()
-n=${#PLAN_GROUP[@]}; i=0
-while [ "$i" -lt "$n" ]; do
-  g="${PLAN_GROUP[$i]}"
-  if [ "$g" = "safe" ] || { [ "$SAFE_ONLY" -eq 0 ] && [ "$g" = "review" ]; }; then
-    # Skip the brew autoremove -n preview as an "action" — it's only a preview; run it but it deletes nothing.
-    RUN_IDX+=("$i")
-  fi
-  i=$((i+1))
-done
+n=${#PLAN_GROUP[@]}
+if [ -n "$SELECT_IDS" ]; then
+  # Explicit id selection (comma- or space-separated) overrides group logic.
+  # Only valid in-range numeric ids are kept; --safe-only is ignored here because
+  # the user chose exact items. Protected-path guard + per-item confirm still apply.
+  for id in $(printf '%s' "$SELECT_IDS" | tr ',' ' '); do
+    case "$id" in ''|*[!0-9]*) continue ;; esac
+    [ "$id" -lt "$n" ] || continue
+    RUN_IDX+=("$id")
+  done
+else
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    g="${PLAN_GROUP[$i]}"
+    if [ "$g" = "safe" ] || { [ "$SAFE_ONLY" -eq 0 ] && [ "$g" = "review" ]; }; then
+      # Skip the brew autoremove -n preview as an "action" — it's only a preview; run it but it deletes nothing.
+      RUN_IDX+=("$i")
+    fi
+    i=$((i+1))
+  done
+fi
 
 if [ "${#RUN_IDX[@]}" -eq 0 ]; then
   printf '\n%sNothing to apply.%s\n' "$Y" "$R"; exit 0

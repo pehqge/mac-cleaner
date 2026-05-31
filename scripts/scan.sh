@@ -397,6 +397,81 @@ if [ -n "$out" ]; then printf '%s\n' "$out"; else note "(no files > 500MB found 
 note "Photos Library and messaging-app containers are USER DATA — never auto-delete (awareness only)."
 
 # ----------------------------------------------------------------------------
+# Xcode simulator runtimes (CleanMyMac "Xcode Junk" — biggest dev win when present).
+# ----------------------------------------------------------------------------
+section "XCODE SIMULATOR RUNTIMES (read-only)"
+if command -v xcrun >/dev/null 2>&1 && xcrun simctl help >/dev/null 2>&1; then
+  RT=$(xcrun simctl runtime list 2>/dev/null || true)
+  if [ -n "$RT" ]; then
+    printf '%s\n' "$RT" | sed 's/^/  /'
+    UNAVAIL=$(printf '%s' "$RT" | grep -ci 'unavailable' || true)
+    if [ "${UNAVAIL:-0}" -gt 0 ]; then
+      printf '%s  %s unavailable runtime(s) — orphaned by Xcode/OS updates, re-downloadable.%s\n' "$Y" "$UNAVAIL" "$R"
+      note "Reclaim (Safe, tool-native): xcrun simctl delete unavailable   (clean.sh offers this)"
+    else
+      note "No unavailable runtimes — nothing to prune."
+    fi
+  else
+    note "simctl returned no runtimes."
+  fi
+else
+  note "Xcode command-line tools / simctl not present — skipping."
+fi
+
+# ----------------------------------------------------------------------------
+# User + system logs (CleanMyMac "User/System Log Files").
+# ----------------------------------------------------------------------------
+section "LOGS — user (read-only). NEVER blanket-wiped; Claude + DiagnosticReports excluded."
+if [ -d "${H}/Library/Logs" ]; then
+  du -sh "${H}/Library/Logs" 2>/dev/null || true
+  sub "Stale third-party log dirs/files >30d (candidates only — excludes Claude & DiagnosticReports)"
+  out=$( { find "${H}/Library/Logs" -mindepth 1 -maxdepth 1 -mtime +30 ! -name Claude ! -path '*Claude*' ! -name DiagnosticReports -print0 2>/dev/null || true; } \
+    | while IFS= read -r -d '' lg; do is_protected "$lg" && continue; du -sh "$lg" 2>/dev/null || true; done | sort -rh 2>/dev/null | head -20 )
+  if [ -n "$out" ]; then printf '%s\n' "$out"; else note "(no stale third-party logs >30d)"; fi
+else
+  note "~/Library/Logs not present."
+fi
+note "System logs (/private/var/log) need sudo to clear — handled in the deferred end-of-session sudo block, not here."
+
+# ----------------------------------------------------------------------------
+# Broken preferences (CleanMyMac "Broken Preferences") — corrupt plists.
+# ----------------------------------------------------------------------------
+section "BROKEN PREFERENCES (read-only) — plists that fail plutil -lint"
+if command -v plutil >/dev/null 2>&1 && [ -d "${H}/Library/Preferences" ]; then
+  bad=0
+  while IFS= read -r -d '' plf; do
+    is_protected "$plf" && continue
+    if ! plutil -lint "$plf" >/dev/null 2>&1; then
+      du -sh "$plf" 2>/dev/null || true
+      bad=$((bad+1))
+    fi
+  done < <(find "${H}/Library/Preferences" -maxdepth 1 -type f -name '*.plist' -print0 2>/dev/null)
+  [ "$bad" -eq 0 ] && note "(no corrupt plists found — good)" \
+    || note "${bad} corrupt plist(s) — safe to remove; owning app regenerates a clean default. (clean.sh offers each)"
+else
+  note "plutil or ~/Library/Preferences unavailable — skipping."
+fi
+
+# ----------------------------------------------------------------------------
+# Broken login items (CleanMyMac "Broken Login Items") — agents to missing apps.
+# ----------------------------------------------------------------------------
+section "BROKEN LOGIN ITEMS (read-only) — user LaunchAgents pointing to a missing program"
+broken=0
+if [ -d "${H}/Library/LaunchAgents" ]; then
+  for pl in "${H}/Library/LaunchAgents/"*.plist; do
+    [ -e "$pl" ] || continue
+    prog=$(/usr/libexec/PlistBuddy -c 'Print :Program' "$pl" 2>/dev/null || true)
+    [ -z "$prog" ] && prog=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$pl" 2>/dev/null || true)
+    if [ -n "$prog" ] && [ ! -e "$prog" ]; then
+      printf '%s  BROKEN%s %s -> missing: %s\n' "$Y" "$R" "${pl##*/}" "$prog"
+      broken=$((broken+1))
+    fi
+  done
+fi
+[ "$broken" -eq 0 ] && note "(no broken user LaunchAgents found)" \
+  || note "${broken} orphaned agent(s). Remove the plist + check System Settings > Login Items. Verify it's truly unused first."
+
+# ----------------------------------------------------------------------------
 # Phase 1d — Optimizations NOT yet applied (read-only checks)
 # ----------------------------------------------------------------------------
 section "OPTIMIZATIONS — which background/perf tweaks are not yet applied (read-only)"
