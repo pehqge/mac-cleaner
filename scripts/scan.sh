@@ -384,7 +384,14 @@ section "LARGE FILES > 500MB in home (read-only; protected & user-data excluded)
 # so user-configured protect paths are honored too. All pipes are made tolerant
 # (|| true) so a permission-denied file cannot abort under pipefail.
 PRUNE_ARGS=()
-for p in ${PROTECTED[@]+"${PROTECTED[@]}"}; do
+# Cloud-sync roots are pruned, never walked and never sized: their entries are dataless
+# placeholders, so traversing them makes the file provider materialize content over the
+# network — a read-only scan would stall for hours and *consume* disk instead of freeing it.
+CLOUD_ROOTS=(
+  "${H}/Library/Mobile Documents"
+  "${H}/Library/CloudStorage"
+)
+for p in ${PROTECTED[@]+"${PROTECTED[@]}"} ${CLOUD_ROOTS[@]+"${CLOUD_ROOTS[@]}"}; do
   PRUNE_ARGS+=( -path "$p" -o )
 done
 out=$( { find "$H" -xdev \( ${PRUNE_ARGS[@]+"${PRUNE_ARGS[@]}"} -false \) -prune -o \
@@ -394,6 +401,7 @@ out=$( { find "$H" -xdev \( ${PRUNE_ARGS[@]+"${PRUNE_ARGS[@]}"} -false \) -prune
       du -sh "$f" 2>/dev/null || true
     done | sort -rh 2>/dev/null | head -30 )
 if [ -n "$out" ]; then printf '%s\n' "$out"; else note "(no files > 500MB found outside protected dirs)"; fi
+note "Skipped (cloud-synced, walking them would download from the network): iCloud Drive, CloudStorage."
 note "Photos Library and messaging-app containers are USER DATA — never auto-delete (awareness only)."
 
 # ----------------------------------------------------------------------------
